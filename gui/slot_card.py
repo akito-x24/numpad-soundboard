@@ -14,7 +14,7 @@ class SlotCard(ctk.CTkFrame):
         on_volume_change: Callable[[str, int], None],
         **kwargs,
     ):
-        super().__init__(master, corner_radius=10, height=96, **kwargs)
+        super().__init__(master, corner_radius=16, height=118, **kwargs)
         # Lock the card to a fixed height regardless of content (grid
         # normally auto-sizes a frame to its tallest child, which would
         # make a card with a long, wrapped filename taller than an empty
@@ -43,8 +43,8 @@ class SlotCard(ctk.CTkFrame):
 
         self.name_label = ctk.CTkLabel(
             self.body, text=empty_label, anchor="w", justify="left",
-            text_color=("gray45", "gray60"), font=ctk.CTkFont(size=13),
-            wraplength=150, cursor="hand2",
+            text_color=("gray45", "gray60"), font=ctk.CTkFont(size=15),
+            wraplength=360, cursor="hand2",
         )
         self.name_label.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
 
@@ -53,18 +53,18 @@ class SlotCard(ctk.CTkFrame):
             widget.bind("<Button-3>", self._handle_remove_event)
 
         self.play_btn = ctk.CTkButton(
-            self, text="\u25b6", width=34, height=34, corner_radius=17,
-            font=ctk.CTkFont(size=13), command=self._handle_test,
+            self, text="\u25b6", width=36, height=48, corner_radius=36,
+            font=ctk.CTkFont(size=24), command=self._handle_test,
         )
-        self.play_btn.grid(row=0, column=1, padx=(0, 10), pady=(10, 4))
+        self.play_btn.grid(row=0, column=1, padx=(0, 10), pady=(10, 5))
 
         # Always present (even when empty) so the card is the same size
         # whether or not a sound is assigned.
         self.volume_slider = ctk.CTkSlider(
-            self, from_=0, to=100, number_of_steps=100, height=14,
+            self, from_=0, to=100, number_of_steps=100, height=16,
             command=self._on_slider_move,
         )
-        self.volume_slider.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
+        self.volume_slider.grid(row=1, column=0, columnspan=2, padx=8, pady=(0, 10), sticky="ew")
 
         self.set_empty()
 

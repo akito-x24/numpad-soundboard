@@ -81,10 +81,45 @@ Numpad `*` and `/` switch to the next/previous playlist instead of
 adjusting volume (that's `+`/`-` now). They share a scan-code table entry
 each, same as every other special key here, so rebinding/suppression
 logic treats them identically to volume/stop-last.
+
+NUM LOCK AS THE MASTER ARM/DISARM SWITCH
+------------------------------------------
+Num Lock (scan_code 69, is_keypad True - see the table above) doubles as
+a physical enable/disable switch for the whole soundboard, equivalent to
+clicking the header's Disable/Enable button: Num Lock ON means the board
+is armed (numpad presses trigger sounds); Num Lock OFF means every
+numpad press is left completely alone and simply falls through to
+whatever Num Lock's own OS-level state makes it do.
+
+This needed two-tier control, not a single "hook on/off" flag:
+`HotkeyManager.active` (the low-level hook itself) has to stay
+registered at all times so Num Lock presses are still seen even while
+disarmed - otherwise there'd be no way to turn the board back on again.
+`HotkeyManager.enabled` is the new, separate arm/disarm flag that
+actually gates whether a recognised action dispatches; Num Lock and the
+GUI's manual toggle both just flip this one flag; the Num Lock keypress
+itself always passes through untouched (never suppressed) either way,
+since suppressing it would stop Num Lock's own light/state from
+toggling normally.
+
+`enabled` starts out matching whatever Num Lock is actually doing at the
+OS level right now (see `_query_num_lock_state` below), read fresh every
+time the hook (re)starts, rather than persisted - so it can never get
+out of sync with the physical indicator across a restart. From then on
+it's tracked purely by counting debounced Num Lock key-down events
+(matching every other key here), not by re-querying GetKeyState on every
+press: WH_KEYBOARD_LL hooks are known to fire before Windows finishes
+updating a toggle key's reported state, so reading it live on each press
+is unreliable. The one tradeoff is that something that changes Num Lock
+without going through this hook (a second keyboard, a remote session,
+an on-screen keyboard) can desync the app's notion of "enabled" from the
+real LED; there's no fully race-free fix for that on Windows, short of
+polling GetKeyState continuously.
 """
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from typing import Callable, Dict, Optional, Set, Tuple
 
@@ -112,14 +147,36 @@ VOLUME_DOWN_KEYS: Set[KeyId] = {(74, True)}     # Numpad -
 STOP_LAST_KEYS: Set[KeyId] = {(83, True)}       # Numpad .
 NEXT_PLAYLIST_KEYS: Set[KeyId] = {(55, True)}   # Numpad *
 PREV_PLAYLIST_KEYS: Set[KeyId] = {(53, True)}   # Numpad /
+NUM_LOCK_KEY: KeyId = (69, True)                # Num Lock - arms/disarms the board
 
 DEFAULT_PANIC_KEY: KeyId = (83, False)  # dedicated Delete key (not the numpad one)
 DEFAULT_PANIC_LABEL = "Delete"
 
 _RESERVED_KEYS: Set[KeyId] = (
     set(SLOT_KEYMAP) | VOLUME_UP_KEYS | VOLUME_DOWN_KEYS | STOP_LAST_KEYS
-    | NEXT_PLAYLIST_KEYS | PREV_PLAYLIST_KEYS
+    | NEXT_PLAYLIST_KEYS | PREV_PLAYLIST_KEYS | {NUM_LOCK_KEY}
 )
+
+
+def _query_num_lock_state() -> Optional[bool]:
+    """
+    Best-effort, one-shot read of the real OS-level Num Lock toggle (the
+    keyboard's own LED state) via user32's GetKeyState. Used only to seed
+    HotkeyManager.enabled when the hook (re)starts - see the "NUM LOCK AS
+    THE MASTER ARM/DISARM SWITCH" note in this module's docstring for why
+    it's not re-queried on every keypress. Returns None on any platform
+    or environment where this isn't available; callers treat that as
+    "assume ON", matching today's default-enabled behaviour.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        VK_NUMLOCK = 0x90
+        return bool(ctypes.windll.user32.GetKeyState(VK_NUMLOCK) & 1)
+    except Exception:
+        logger.debug("Could not query Num Lock state", exc_info=True)
+        return None
 
 
 class HotkeyManager:
@@ -144,6 +201,7 @@ class HotkeyManager:
         on_panic: Callable[[], None],
         on_next_playlist: Callable[[], None],
         on_prev_playlist: Callable[[], None],
+        on_numlock_toggle: Callable[[bool], None],
         panic_key: KeyId = DEFAULT_PANIC_KEY,
         suppress: bool = False,
     ):
@@ -154,6 +212,7 @@ class HotkeyManager:
         self._on_panic = on_panic
         self._on_next_playlist = on_next_playlist
         self._on_prev_playlist = on_prev_playlist
+        self._on_numlock_toggle = on_numlock_toggle
         self.panic_key: KeyId = panic_key
         self.suppress = suppress
 
@@ -161,7 +220,8 @@ class HotkeyManager:
         self._held_lock = threading.Lock()
         self._remove_hook: Optional[Callable[[], None]] = None
         self._capture_callback: Optional[Callable[[KeyId, str], None]] = None
-        self.active = False
+        self.active = False  # is the OS-level hook registered at all?
+        self.enabled = True  # is the board currently armed? (Num Lock / GUI toggle)
 
     # ---- lifecycle ----
 
@@ -172,6 +232,12 @@ class HotkeyManager:
         try:
             self._remove_hook = keyboard.hook(self._handle_event, suppress=self.suppress)
             self.active = True
+            # Sync "armed or not" to whatever Num Lock is actually doing
+            # right now, rather than remembering our own past value - see
+            # the module docstring's Num Lock section for why.
+            state = _query_num_lock_state()
+            # self.enabled = True if state is None else state
+            self.enabled = True if state is None else (not state)
             return True, None
         except Exception as e:
             logger.error("Failed to register global keyboard hook: %s", e)
@@ -212,6 +278,12 @@ class HotkeyManager:
     def set_panic_key(self, key_id: KeyId) -> None:
         self.panic_key = key_id
 
+    def set_enabled(self, enabled: bool) -> None:
+        """Arm/disarm the board without touching the OS-level hook
+        registration - used by the GUI's manual toggle button and the
+        tray menu, so they and Num Lock all converge on one flag."""
+        self.enabled = bool(enabled)
+
     # ---- event handling ----
 
     def _handle_event(self, event) -> bool:
@@ -230,6 +302,25 @@ class HotkeyManager:
                     logger.exception("Error in key-capture callback")
             return True  # never suppress while capturing
 
+        if key_id == NUM_LOCK_KEY:
+            # Debounce the same way every other key here does, but never
+            # suppress - Num Lock must keep toggling its own OS state (and
+            # LED) normally regardless of anything else. Always processed,
+            # even while disarmed, since this is the only way to re-arm.
+            with self._held_lock:
+                already_held = key_id in self._held
+                if is_down:
+                    self._held.add(key_id)
+                else:
+                    self._held.discard(key_id)
+            if is_down and not already_held:
+                self.enabled = not self.enabled
+                try:
+                    self._on_numlock_toggle(self.enabled)
+                except Exception:
+                    logger.exception("Error in numlock-toggle callback")
+            return True
+
         action = self._resolve_action(key_id)
         if action is None:
             return True  # not one of ours
@@ -242,6 +333,11 @@ class HotkeyManager:
                 self._held.add(key_id)
             else:
                 self._held.discard(key_id)
+
+        if not self.enabled:
+            # Disarmed (Num Lock off): hands off entirely, regardless of
+            # the suppress setting - the numpad falls through untouched.
+            return True
 
         if is_down and not already_held:
             try:

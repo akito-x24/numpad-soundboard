@@ -47,6 +47,11 @@ ctk.set_default_color_theme("blue")
 
 SLOT_DISPLAY_LABELS = {str(i): f"NUM {i}" for i in range(10)}
 AUTOSAVE_DEBOUNCE_MS = 1500
+# Shared border so every card in the slot grid reads as a clearly
+# separate tile against the scroll area's background, rather than
+# blending into it.
+CARD_BORDER_WIDTH = 2
+CARD_BORDER_COLOR = ("gray65", "gray35")
 
 
 class SoundboardApp(ctk.CTk):
@@ -78,8 +83,8 @@ class SoundboardApp(ctk.CTk):
         self._preload_common_slot()
 
         self.title("Numpad Soundboard")
-        self.geometry("760x820")
-        self.minsize(640, 560)
+        self.geometry("800x800")
+        self.minsize(660, 600)
 
         self._build_widgets()
         self._refresh_playlist_list()
@@ -94,6 +99,7 @@ class SoundboardApp(ctk.CTk):
             on_panic=self._hk_on_panic,
             on_next_playlist=self._hk_on_next_playlist,
             on_prev_playlist=self._hk_on_prev_playlist,
+            on_numlock_toggle=self._hk_on_numlock_toggle,
             panic_key=(self.config.panic_key.scan_code, self.config.panic_key.is_keypad),
             suppress=self.config.suppress_passthrough,
         )
@@ -134,6 +140,12 @@ class SoundboardApp(ctk.CTk):
                 self.audio_engine.preload(sound_id, path)
 
     def _migrate_common_slot_if_needed(self) -> None:
+        """
+        Numpad 0 used to be a per-playlist slot like 1-9; it's now a single
+        shared assignment (AppConfig.common_slot). One-time upgrade path:
+        if common_slot is still empty, adopt whatever the first playlist
+        with an old "0" entry had, so upgrading doesn't lose that sound.
+        """
         if self.config.common_slot.sound_id:
             return
         for playlist in self.playlist_manager.list_playlists():
@@ -186,8 +198,19 @@ class SoundboardApp(ctk.CTk):
             row=0, column=1, padx=(0, 4), pady=12
         )
 
-        self.playlist_combo = ctk.CTkComboBox(bar, values=[], command=self._on_playlist_selected)
+        # state="readonly" stops the entry from being typed into directly
+        # (it looked like an inline-rename field but never saved anything
+        # typed there - renaming only ever happens via the Rename button).
+        # CTkComboBox only opens its dropdown from the small arrow button
+        # by default; binding Button-1 on the whole widget makes clicking
+        # anywhere on the name bar open it too, matching "hover, click,
+        # dropdown opens" rather than "click to type".
+        self.playlist_combo = ctk.CTkComboBox(
+            bar, values=[], command=self._on_playlist_selected, state="readonly"
+        )
         self.playlist_combo.grid(row=0, column=2, sticky="ew", pady=12)
+        self.playlist_combo._entry.configure(cursor="hand2")
+        self.playlist_combo.bind("<Button-1>", self._open_playlist_dropdown)
 
         ctk.CTkButton(bar, text=">", width=32, command=lambda: self._cycle_playlist(+1)).grid(
             row=0, column=3, padx=(4, 10), pady=12
@@ -211,6 +234,8 @@ class SoundboardApp(ctk.CTk):
             on_change=self._gui_change_slot,
             on_remove=self._gui_remove_slot,
             on_volume_change=self._gui_slot_volume_change,
+            border_width=CARD_BORDER_WIDTH,
+            border_color=CARD_BORDER_COLOR,
         )
         self._slot_cards[slot_key] = card
         return card
@@ -218,38 +243,38 @@ class SoundboardApp(ctk.CTk):
     def _build_slot_list(self) -> None:
         self.slot_scroll = ctk.CTkScrollableFrame(self, label_text="")
         self.slot_scroll.grid(row=2, column=0, sticky="nsew", padx=16, pady=8)
+
+        # 3 columns x 4 rows. Numbers 1-9 fill the top 3x3 block. Row 3 is
+        # a single bottom row split into the common Numpad 0 slot (1
+        # column wide) and Master Volume (2 columns wide) - Numpad 0 is
+        # intentionally not part of the 3x3 playlist grid, since it's the
+        # same across every playlist.
         for col in range(3):
             self.slot_scroll.grid_columnconfigure(col, weight=1, uniform="slotcol")
 
-        # Numpad 1-9 as a 3x3 grid.
         for i, key in enumerate(SLOT_KEYS):
             row, col = divmod(i, 3)
             card = self._make_slot_card(self.slot_scroll, key, SLOT_DISPLAY_LABELS[key])
-            card.grid(row=row, column=col, padx=20, pady=20, sticky="nsew")
+            card.grid(row=row, column=col, padx=14, pady=14, sticky="nsew")
 
-        # Bottom row: the common Numpad 0 slot (left) + master volume
-        # (spans the rest) - Numpad 0 is intentionally NOT part of the 3x3
-        # playlist grid above, since it's the same across every playlist.
-        bottom = ctk.CTkFrame(self.slot_scroll, fg_color="transparent")
-        bottom.grid(row=3, column=0, columnspan=3, sticky="nsew", pady=(20, 0))
-        bottom.grid_columnconfigure(0, weight=1, uniform="slotcol")
-        bottom.grid_columnconfigure(1, weight=2)
+        common_card = self._make_slot_card(self.slot_scroll, COMMON_SLOT_KEY, "NUM 0 (common)")
+        common_card.grid(row=3, column=0, padx=14, pady=14, sticky="nsew")
 
-        common_card = self._make_slot_card(bottom, COMMON_SLOT_KEY, "NUM 0 (common)")
-        common_card.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
-
-        volume_card = ctk.CTkFrame(bottom, corner_radius=10)
-        volume_card.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+        volume_card = ctk.CTkFrame(
+            self.slot_scroll, corner_radius=10,
+            border_width=CARD_BORDER_WIDTH, border_color=CARD_BORDER_COLOR,
+        )
+        volume_card.grid(row=3, column=1, columnspan=2, padx=14, pady=14, sticky="nsew")
         volume_card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(volume_card, text="Master Volume", font=ctk.CTkFont(weight="bold")).grid(
-            row=0, column=0, padx=14, pady=(14, 4), sticky="w"
+        ctk.CTkLabel(volume_card, text="Master Volume", font=ctk.CTkFont(size=15, weight="bold")).grid(
+            row=0, column=0, padx=16, pady=(14, 6), sticky="w"
         )
         self.master_slider = ctk.CTkSlider(
             volume_card, from_=0, to=100, number_of_steps=100, command=self._on_master_slider_move
         )
-        self.master_slider.grid(row=1, column=0, padx=14, pady=(0, 4), sticky="ew")
-        self.master_pct_label = ctk.CTkLabel(volume_card, text="75%")
-        self.master_pct_label.grid(row=2, column=0, padx=14, pady=(0, 12), sticky="w")
+        self.master_slider.grid(row=1, column=0, padx=16, pady=(0, 6), sticky="ew")
+        self.master_pct_label = ctk.CTkLabel(volume_card, text="75%", font=ctk.CTkFont(size=13))
+        self.master_pct_label.grid(row=2, column=0, padx=16, pady=(0, 14), sticky="w")
 
     def _build_footer(self) -> None:
         footer = ctk.CTkFrame(self)
@@ -257,21 +282,33 @@ class SoundboardApp(ctk.CTk):
         footer.grid_columnconfigure(0, weight=1)
 
         legend = (
-            "(.) = STOP LAST   \u2022    (+) OR (-) = VOLUME UP/DOWN   \u2022   "
-            "(*) OR (/) = NEXT/PREV PLAYLIST   \u2022   RIGHT CLICK ON CARD TO REMOVE THE SOUND"
+            "( . ) = STOP LAST   \u2022   ( + ) / ( - ) = VOLUME UP/DOWN   \u2022   ( * ) / ( / ) = PREV/NEXT PLAYLIST   \u2022   "
+            "NUM LOCK = ENABLE/DISABLE SOUNDBOARD  \u2022   RIGHT-CLICK CARD = REMOVE SOUND"
         )
-        ctk.CTkLabel(footer, text=legend, text_color=("gray35", "gray70")).grid(
-            row=0, column=0, sticky="w", padx=14, pady=(10, 2)
+        legend_label = ctk.CTkLabel(
+            footer, text=legend, text_color=("gray35", "gray70"), anchor="w", justify="left"
         )
+        legend_label.grid(row=0, column=0, sticky="w", padx=14, pady=12)
 
         panic_row = ctk.CTkFrame(footer, fg_color="transparent")
-        panic_row.grid(row=1, column=0, sticky="w", padx=14, pady=(0, 10))
+        panic_row.grid(row=0, column=1, sticky="e", padx=14, pady=12)
         ctk.CTkLabel(panic_row, text="Panic key (stop all):").pack(side="left")
         self.panic_key_label = ctk.CTkLabel(
             panic_row, text=self.config.panic_key.label, font=ctk.CTkFont(weight="bold")
         )
         self.panic_key_label.pack(side="left", padx=(6, 12))
         ctk.CTkButton(panic_row, text="Rebind", width=70, command=self._open_rebind_dialog).pack(side="left")
+
+        # The legend and panic controls share a row, so a fixed wraplength
+        # would clip at some window sizes and waste space at others -
+        # recompute it against the actual leftover width whenever the
+        # footer resizes, so it always wraps exactly where it needs to.
+        def _update_legend_wrap(event=None) -> None:
+            available = footer.winfo_width() - panic_row.winfo_reqwidth() - 48
+            if available > 150:
+                legend_label.configure(wraplength=available)
+
+        footer.bind("<Configure>", _update_legend_wrap)
 
     def _build_status_bar(self) -> None:
         self.status_label = ctk.CTkLabel(self, text="Ready.", text_color=("gray45", "gray60"), anchor="w")
@@ -312,6 +349,10 @@ class SoundboardApp(ctk.CTk):
         elif kind == "tray_enable":
             if not self.hotkey_manager.active:
                 self._start_hotkeys()
+            else:
+                self.hotkey_manager.set_enabled(True)
+                self._apply_hotkey_status(True)
+                self._set_status("Hotkeys enabled.")
         elif kind == "tray_disable":
             self._disable_hotkeys()
         elif kind == "tray_exit":
@@ -319,6 +360,13 @@ class SoundboardApp(ctk.CTk):
         elif kind == "rebind_captured":
             key_id, label = payload
             self._apply_rebind_capture(key_id, label)
+        elif kind == "numlock_toggle":
+            (enabled,) = payload
+            self._apply_hotkey_status(enabled)
+            self._set_status(
+                "Soundboard enabled (Num Lock on)." if enabled
+                else "Soundboard disabled (Num Lock off) \u2014 numpad passes through normally."
+            )
         elif kind == "playlist_switched":
             (new_id,) = payload
             self._refresh_playlist_list()
@@ -334,9 +382,6 @@ class SoundboardApp(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _resolve_assignment(self, slot_key: str) -> Optional[SlotAssignment]:
-        """Numpad 0 reads from the shared common_slot; 1-9 read from
-        whichever playlist is currently active. Safe from any thread -
-        only reads plain config/playlist state, no widget access."""
         if slot_key == COMMON_SLOT_KEY:
             return self.config.common_slot
         playlist = self.playlist_manager.get(self.config.active_playlist_id)
@@ -373,13 +418,10 @@ class SoundboardApp(ctk.CTk):
     def _hk_on_prev_playlist(self) -> None:
         self._cycle_playlist(-1)
 
+    def _hk_on_numlock_toggle(self, enabled: bool) -> None:
+        self._post("numlock_toggle", enabled)
+
     def _cycle_playlist(self, direction: int) -> None:
-        """Handler for the </> buttons AND the */÷ hotkeys - both can
-        plausibly fire several times in quick succession (skipping
-        through playlists), so this path debounces its save and defers
-        its GUI refresh through a queue message, via _switch_active_playlist.
-        Contrast with _on_playlist_selected below, which is a one-off
-        selection with no reason to delay anything."""
         playlists = self.playlist_manager.list_playlists()
         if len(playlists) <= 1:
             return
@@ -519,6 +561,11 @@ class SoundboardApp(ctk.CTk):
         if active:
             self.playlist_combo.set(active.name)
 
+    def _open_playlist_dropdown(self, event=None) -> None:
+        combo = self.playlist_combo
+        if not combo._dropdown_menu.is_open():
+            combo._open_dropdown_menu()
+
     def _on_playlist_selected(self, name: str) -> None:
         names = [p.name for p in self.playlist_manager.list_playlists()]
         if name not in names:
@@ -602,31 +649,37 @@ class SoundboardApp(ctk.CTk):
                 "but Numpad hotkeys won't trigger sounds until this is resolved. Try "
                 "running as Administrator, or see Troubleshooting in the README.",
             )
-        self._apply_hotkey_status(success)
+        # Reflect whatever HotkeyManager.start() just synced `enabled` to
+        # (it reads the live Num Lock state - see core/hotkeys.py).
+        self._apply_hotkey_status(self.hotkey_manager.enabled)
         if not initial:
             self.config_manager.save()
 
     def _disable_hotkeys(self) -> None:
+        """Arms/disarms the board - same action as a Num Lock press or
+        the tray menu, NOT a full hook teardown (see core/hotkeys.py's
+        module docstring for why the hook itself stays registered)."""
         if self.hotkey_manager.active:
-            self.hotkey_manager.stop()
-            self.config.hotkeys_enabled = False
+            self.hotkey_manager.set_enabled(False)
             self._apply_hotkey_status(False)
-            self.config_manager.save()
             self._set_status("Hotkeys disabled.")
 
-    def _apply_hotkey_status(self, active: bool) -> None:
-        if active:
+    def _apply_hotkey_status(self, enabled: bool) -> None:
+        if enabled:
             self.toggle_hotkeys_btn.configure(text="Disable", fg_color="#2E7D46", hover_color="#255E38")
         else:
             self.toggle_hotkeys_btn.configure(text="Enable", fg_color="#8B2E2E", hover_color="#6E2424")
 
     def _toggle_hotkeys(self) -> None:
-        if self.hotkey_manager.active:
-            self._disable_hotkeys()
-        else:
+        if not self.hotkey_manager.active:
+            # The hook itself never registered (e.g. blocked by security
+            # software) - this click retries registration, same as before.
             self._start_hotkeys()
-            if self.hotkey_manager.active:
-                self._set_status("Hotkeys enabled.")
+            return
+        new_state = not self.hotkey_manager.enabled
+        self.hotkey_manager.set_enabled(new_state)
+        self._apply_hotkey_status(new_state)
+        self._set_status("Hotkeys enabled." if new_state else "Hotkeys disabled.")
 
     # ------------------------------------------------------------------
     # Panic key rebinding
