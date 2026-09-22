@@ -1,0 +1,12 @@
+customtkinter>=5.2.0
+keyboard>=0.13.5
+# Using pygame-ce (Community Edition), not "pygame": upstream pygame's last
+# PyPI release is 2.6.1 (Sep 2024) with no Windows wheel for Python 3.13/3.14
+# yet, so `pip install pygame` on a recent Python falls back to a source
+# build that fails (distutils.msvccompiler was removed in modern Python).
+# pygame-ce is the actively-maintained fork most original pygame core devs
+# moved to; it ships current Windows wheels and installs as the same
+# top-level `pygame` module, so no code changes are needed either way.
+pygame-ce>=2.5.0
+pystray>=0.19.0
+Pillow>=10.0.0
