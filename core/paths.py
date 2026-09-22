@@ -42,3 +42,24 @@ def get_sounds_dir() -> Path:
     d = get_app_data_dir() / "sounds"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def get_assets_dir() -> Path:
+    """
+    Resolves the bundled `assets/` folder - both running from source and
+    once frozen into a PyInstaller build (files live next to the exe,
+    exposed via sys._MEIPASS).
+    """
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    else:
+        base = Path(__file__).resolve().parent.parent
+    return base / "assets"
+
+
+def get_icon_ico_path() -> Path:
+    return get_assets_dir() / "icon.ico"
+
+
+def get_icon_png_path() -> Path:
+    return get_assets_dir() / "icon.png"

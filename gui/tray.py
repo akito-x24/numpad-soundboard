@@ -1,21 +1,23 @@
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Callable, Optional
 
 import pystray
-from PIL import Image, ImageDraw
+from PIL import Image
+
+from core.paths import get_icon_png_path
+
+logger = logging.getLogger(__name__)
 
 
 def _build_icon_image() -> "Image.Image":
-    size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse((3, 3, size - 3, size - 3), fill=(37, 99, 235, 255))
-    # Simple speaker glyph so the icon reads clearly even at small sizes.
-    draw.polygon([(18, 24), (28, 24), (39, 14), (39, 50), (28, 40), (18, 40)], fill=(255, 255, 255, 255))
-    draw.arc((34, 19, 50, 45), start=300, end=60, fill=(255, 255, 255, 255), width=3)
-    return img
+    try:
+        return Image.open(get_icon_png_path())
+    except Exception as e:
+        logger.warning("Failed to load tray icon %s: %s", get_icon_png_path(), e)
+        return Image.new("RGBA", (64, 64), (37, 99, 235, 255))
 
 
 class TrayIcon:

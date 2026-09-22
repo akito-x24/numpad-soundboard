@@ -36,6 +36,7 @@ from core.hotkeys import DEFAULT_PANIC_LABEL, HotkeyManager, KeyId, is_reserved
 from core.models import ALL_SLOT_KEYS, COMMON_SLOT_KEY, SLOT_KEYS, SlotAssignment
 from core.playlist_manager import PlaylistManager
 from core.sound_library import SoundLibrary
+from core.paths import get_icon_ico_path
 
 from .rebind_dialog import RebindDialog
 from .slot_card import SlotCard
@@ -82,7 +83,11 @@ class SoundboardApp(ctk.CTk):
         self._preload_active_playlist()
         self._preload_common_slot()
 
+        # self.title("Numpad Soundboard")
+        # self.geometry("800x800")
+        # self.minsize(660, 600)
         self.title("Numpad Soundboard")
+        self.after(250, self._set_window_icon)
         self.geometry("800x800")
         self.minsize(660, 600)
 
@@ -763,7 +768,6 @@ class SoundboardApp(ctk.CTk):
         except Exception as e:
             logger.warning("System tray unavailable: %s", e)
             self.tray = None
-
     # ------------------------------------------------------------------
     # Shutdown (see README's Application Lifecycle section)
     # ------------------------------------------------------------------
@@ -793,3 +797,10 @@ class SoundboardApp(ctk.CTk):
         except Exception:
             logger.exception("Error shutting down audio engine")
         self.destroy()
+
+    
+    def _set_window_icon(self) -> None:
+        try:
+            self.iconbitmap(str(get_icon_ico_path()))
+        except Exception as e:
+            logger.warning("Failed to set window icon: %s", e)
